@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""绝地潜兵2 重大指令(MO)监视器 —— GitHub Actions 版
+"""绝地潜兵2 重大指令(MO)记录器 —— GitHub Actions 版
+
+它不负责通知：通知由本机的 DSH 定时任务做。
+这里只做一件事——每小时看一眼 MO 有没有换，换了就往 state/ 里记一笔，
+让仓库留下一条随时间增长的 MO 变更历史（git log 就是完整的流水账）。
 
 流程:
   1. 拉社区 API /api/v1/assignments
-  2. 和 state/mo_state.json 里的 MO id 集合比对
-  3. 有变化 -> 开一个 GitHub Issue(默认通知渠道) + 可选 Discord webhook
-  4. 无变化 -> 静默退出, 由 workflow 提交新的 state
-
-环境变量:
-  GITHUB_TOKEN        由 Actions 自动注入, 用于开 issue
-  GITHUB_REPOSITORY   owner/repo, 由 Actions 自动注入
-  DISCORD_WEBHOOK_URL 可选, 配了才会额外推 Discord
-  DRY_RUN=1           只打印, 不真的开 issue
+  2. 与 state/mo_state.json 比对
+  3. 有变化 -> 追加一行到 state/history.md，并更新 state/mo_state.json
+  4. 无变化 -> 什么也不做（不写文件，不产生提交）
 """
 import json
 import os
@@ -22,74 +20,60 @@ import urllib.request
 import urllib.error
 
 API = "https://api.helldivers2.dev/api/v1/assignments"
-HISTORY = "https://helldiversstats.com/api/v1/historical-major-orders?limit=%d"
+HISTORY_API = "https://helldiversstats.com/api/v1/historical-major-orders?limit=1"
 HEADERS = {
     "X-Super-Client": "hd2-mo-tracker",
-    "X-Super-Contact": "https://github.com/{repo}".format(
-        repo=os.getenv("GITHUB_REPOSITORY", "hd2-mo-tracker")
-    ),
+    "X-Super-Contact": "https://github.com/" + os.getenv("GITHUB_REPOSITORY", "hd2-mo-tracker"),
     "Accept": "application/json",
-    "User-Agent": "hd2-mo-tracker/1.0 (+github-actions)",
+    "User-Agent": "hd2-mo-tracker/2.0 (+github-actions)",
 }
 STATE = "state/mo_state.json"
-REWARD_NAMES = {1: "Medals / 勋章", 2: "Requisition / 申购单", 3: "Super Credits / 超级货币", 4: "Samples / 样本"}
+HISTORY = "state/history.md"
+REWARD_NAMES = {1: "勋章", 2: "申购单", 3: "超级货币", 4: "样本"}
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 def now_utc():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def http_json(url, method="GET", payload=None, token=None, timeout=30):
-    data = None
-    headers = dict(HEADERS)
-    if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+def http_json(url, timeout=40):
+    req = urllib.request.Request(url, headers=HEADERS)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read().decode("utf-8", "replace")
-        return r.status, (json.loads(raw) if raw.strip() else {})
+        return json.loads(raw) if raw.strip() else {}
 
 
 def fetch_assignments():
-    """返回 (assignments, degraded)。
-
-    主 API 挂掉时退到 helldiversstats 的历史库（只取最新一条），
-    degraded=True 表示数据是降级来的，此时**不报「MO 结束」**，只报新 MO 出现。
-    """
+    """返回 (assignments, degraded)；主 API 挂了就退到 helldiversstats 历史库。"""
     try:
-        _, data = http_json(API, timeout=40)
+        data = http_json(API)
         if isinstance(data, list):
             return data, False
         raise ValueError("unexpected payload")
     except Exception as e:
         print("primary api failed:", repr(e))
-        for h in fetch_history(limit=1):
-            oid = h.get("orderId32")
-            if oid is None:
-                continue
-            print("fallback to helldiversstats, order", oid)
-            return [{
-                "id": oid,
-                "title": h.get("title") or "MAJOR ORDER",
-                "briefing": h.get("brief") or "",
-                "tasks": [],
-                "progress": [],
-                "reward": {"type": 1, "amount": h.get("rewardMedals") or 0},
-                "expiration": None,
-            }], True
+        try:
+            items = (http_json(HISTORY_API) or {}).get("items") or []
+            if items:
+                h = items[0]
+                print("fallback to helldiversstats, order", h.get("orderId32"))
+                return [{
+                    "id": h.get("orderId32"),
+                    "title": h.get("title") or "MAJOR ORDER",
+                    "briefing": h.get("brief") or "",
+                    "tasks": [],
+                    "progress": [],
+                    "reward": {"type": 1, "amount": h.get("rewardMedals") or 0},
+                    "expiration": None,
+                }], True
+        except Exception as e2:
+            print("fallback failed:", repr(e2))
         raise
-
-
-def fetch_history(limit=40):
-    """历史 MO: 用作 briefing 兜底, 以及记录上一条指令。"""
-    try:
-        _, data = http_json(HISTORY % limit)
-        return data.get("items") or []
-    except Exception:
-        return []
 
 
 def load_state():
@@ -107,30 +91,18 @@ def save_state(state):
         f.write("\n")
 
 
-def fmt_dt(iso):
-    try:
-        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        return dt.strftime("%Y-%m-%d %H:%M UTC")
-    except Exception:
-        return str(iso)
-
-
-def human_left(iso):
-    try:
-        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        secs = int((dt - now_utc()).total_seconds())
-        if secs <= 0:
-            return "已到期"
-        d, rem = divmod(secs, 86400)
-        h, rem = divmod(rem, 3600)
-        m = rem // 60
-        if d:
-            return "剩 %d 天 %d 小时" % (d, h)
-        if h:
-            return "剩 %d 小时 %d 分" % (h, m)
-        return "剩 %d 分" % m
-    except Exception:
-        return ""
+def append_history(rows):
+    """rows: [(时间, 事件, MO id, 标题, 简报)]"""
+    os.makedirs(os.path.dirname(HISTORY), exist_ok=True)
+    new = not os.path.exists(HISTORY)
+    with open(HISTORY, "a", encoding="utf-8") as f:
+        if new:
+            f.write("# MO 变更流水\n\n")
+            f.write("| 时间 (UTC) | 事件 | MO id | 标题 | 简报 |\n")
+            f.write("| --- | --- | --- | --- | --- |\n")
+        for when, event, oid, title, brief in rows:
+            brief = (brief or "").replace("\n", " ").replace("|", "/")[:160]
+            f.write("| %s | %s | %s | %s | %s |\n" % (when, event, oid, title.replace("|", "/"), brief))
 
 
 def goal_of(a):
@@ -141,80 +113,6 @@ def goal_of(a):
             if vt == 3 and i < len(vals) and vals[i]:
                 return vals[i]
     return None
-
-
-def render(a, prev_titles, history):
-    aid = a.get("id")
-    title = (a.get("title") or "MAJOR ORDER").strip()
-    brief = (a.get("briefing") or "").strip()
-    lines = ["## MO 更新：#%s 《%s》" % (aid, title), ""]
-
-    if brief:
-        lines.append("**内容**：%s" % brief)
-    else:
-        for h in history:
-            if str(h.get("orderId32")) == str(aid) and h.get("brief"):
-                lines.append("**内容**（取自历史库）：%s" % h["brief"])
-                break
-
-    goal = goal_of(a)
-    prog = (a.get("progress") or [0])[0]
-    if goal:
-        try:
-            lines.append("**目标**：%s（当前 %s，%.1f%%）" % (format(goal, ","), format(prog, ","), prog * 100.0 / goal))
-        except Exception:
-            lines.append("**目标**：%s" % format(goal, ","))
-
-    reward = a.get("reward") or {}
-    if reward:
-        lines.append("**奖励**：%s %s" % (reward.get("amount", "?"), REWARD_NAMES.get(reward.get("type"), "奖励")))
-
-    exp = a.get("expiration")
-    if exp:
-        lines.append("**截止**：%s（%s）" % (fmt_dt(exp), human_left(exp)))
-
-    if prev_titles:
-        gone = ["#%s 《%s》" % (k, v) for k, v in prev_titles.items()]
-        if gone:
-            lines.append("")
-            lines.append("_上一条已结束：%s_" % "、".join(gone))
-
-    lines.append("")
-    lines.append("<sub>%s · 数据源 api.helldivers2.dev</sub>" % now_utc().strftime("%Y-%m-%d %H:%M UTC"))
-    return "\n".join(lines)
-
-
-def open_issue(body, title):
-    repo = os.getenv("GITHUB_REPOSITORY")
-    token = os.getenv("GITHUB_TOKEN")
-    if os.getenv("DRY_RUN") == "1" or not repo or not token:
-        print("[dry-run] would open issue:", title)
-        print(body)
-        return
-    try:
-        status, resp = http_json(
-            "https://api.github.com/repos/%s/issues" % repo,
-            method="POST",
-            payload={"title": title, "body": body},
-            token=token,
-        )
-        print("issue created:", resp.get("html_url"), status)
-    except urllib.error.HTTPError as e:
-        print("issue failed:", e.code, e.read()[:300])
-    except Exception as e:
-        print("issue failed:", repr(e))
-
-
-def discord(body, title):
-    url = os.getenv("DISCORD_WEBHOOK_URL")
-    if not url:
-        return
-    try:
-        payload = {"embeds": [{"title": title[:250], "description": body[:3800], "color": 0xFFE710}]}
-        http_json(url, method="POST", payload=payload)
-        print("discord sent")
-    except Exception as e:
-        print("discord failed:", repr(e))
 
 
 def main():
@@ -230,37 +128,48 @@ def main():
 
     if prev is None:
         save_state({"ids": sorted(current), "titles": current, "updated": stamp})
+        append_history([(stamp, "基线", k, v, "") for k, v in sorted(current.items())])
         print("baseline recorded:", ",".join(sorted(current)) or "-")
         return 0
 
     prev_ids = set(prev.get("ids") or [])
+    prev_titles = prev.get("titles") or {}
     cur_ids = set(current)
     added = cur_ids - prev_ids
     removed = prev_ids - cur_ids
     if degraded:
-        # 降级数据可能滞后，不能据此判定「旧 MO 结束」
-        removed = set()
+        removed = set()  # 降级数据可能滞后，不能据此认定旧 MO 结束
 
     if not added and not removed:
         print("no change:", ",".join(sorted(cur_ids)) or "-")
         return 0
 
-    # 只有真的变化了才写 state，避免仓库被时间戳刷屏
-    save_state({"ids": sorted(current), "titles": current, "updated": stamp})
-
-    history = fetch_history() if added else []
-    prev_titles = {k: v for k, v in (prev.get("titles") or {}).items() if k in removed}
+    rows = []
     for a in assignments:
-        if str(a.get("id")) in added:
-            brief = (a.get("briefing") or "Major Order").strip().replace("\n", " ")
-            title = "MO 更新：%s" % brief[:90]
-            body = render(a, prev_titles, history)
-            open_issue(body, title)
-            discord(body, title)
-    if not added and removed:
-        msg = "MO 结束：#%s 已下线，新指令尚未刷新。" % "、".join(sorted(removed))
-        open_issue(msg, "MO 结束：%s" % "、".join(sorted(removed)))
-        discord(msg, "MO 结束")
+        aid = str(a.get("id"))
+        if aid not in added:
+            continue
+        goal = goal_of(a)
+        prog = (a.get("progress") or [0])[0]
+        reward = (a.get("reward") or {})
+        bits = []
+        if goal:
+            bits.append("目标 %s（当前 %s）" % (format(goal, ","), format(prog, ",")))
+        if reward:
+            bits.append("奖励 %s %s" % (reward.get("amount", "?"), REWARD_NAMES.get(reward.get("type"), "奖励")))
+        if a.get("expiration"):
+            bits.append("截止 %s" % a["expiration"])
+        brief = (a.get("briefing") or "").strip()
+        rows.append((stamp, "新 MO", aid, (a.get("title") or "MAJOR ORDER").strip(),
+                     brief + ("；" + "；".join(bits) if bits else "")))
+        print("NEW MO", aid, brief[:100])
+
+    for aid in sorted(removed):
+        rows.append((stamp, "结束", aid, prev_titles.get(aid, ""), ""))
+        print("MO ENDED", aid)
+
+    save_state({"ids": sorted(current), "titles": current, "updated": stamp})
+    append_history(rows)
     return 0
 
 

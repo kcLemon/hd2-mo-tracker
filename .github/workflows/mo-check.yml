@@ -1,21 +1,20 @@
-name: HD2 Major Order Watcher
+name: HD2 Major Order Recorder
 
 on:
   schedule:
-    # 每小时 :05 (UTC) 跑一次；GitHub 的 cron 实际会延迟几分钟到十几分钟
+    # 每小时 :05 (UTC) 看一眼 MO 有没有换；GitHub 实际会延迟几分钟到十几分钟
     - cron: "5 * * * *"
   workflow_dispatch: {}
 
 permissions:
-  contents: write   # 提交 state
-  issues: write     # 开 issue 通知
+  contents: write   # 提交 state/ 里的记录
 
 concurrency:
-  group: mo-watch
+  group: mo-record
   cancel-in-progress: false
 
 jobs:
-  check:
+  record:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,19 +25,17 @@ jobs:
 
       - name: Check Major Order
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python check_mo.py
 
       - name: Commit state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add state/mo_state.json
+          git add state/
           if git diff --cached --quiet; then
-            echo "state unchanged"
+            echo "no change, nothing to commit"
           else
-            git commit -m "chore: mo state $(date -u +%FT%TZ)"
+            git commit -m "record: mo change $(date -u +%FT%TZ)"
             git push
           fi
