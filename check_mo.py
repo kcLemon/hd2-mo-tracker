@@ -227,9 +227,9 @@ def main():
     current = {str(a.get("id")): (a.get("title") or "").strip() for a in assignments if a.get("id") is not None}
     stamp = now_utc().isoformat(timespec="seconds")
     prev = load_state()
-    save_state({"ids": sorted(current), "titles": current, "updated": stamp})
 
     if prev is None:
+        save_state({"ids": sorted(current), "titles": current, "updated": stamp})
         print("baseline recorded:", ",".join(sorted(current)) or "-")
         return 0
 
@@ -244,6 +244,9 @@ def main():
     if not added and not removed:
         print("no change:", ",".join(sorted(cur_ids)) or "-")
         return 0
+
+    # 只有真的变化了才写 state，避免仓库被时间戳刷屏
+    save_state({"ids": sorted(current), "titles": current, "updated": stamp})
 
     history = fetch_history() if added else []
     prev_titles = {k: v for k, v in (prev.get("titles") or {}).items() if k in removed}
