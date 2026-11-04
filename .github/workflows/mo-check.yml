@@ -1,0 +1,44 @@
+name: HD2 Major Order Watcher
+
+on:
+  schedule:
+    # 每小时 :05 (UTC) 跑一次；GitHub 的 cron 实际会延迟几分钟到十几分钟
+    - cron: "5 * * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # 提交 state
+  issues: write     # 开 issue 通知
+
+concurrency:
+  group: mo-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check Major Order
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python check_mo.py
+
+      - name: Commit state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/mo_state.json
+          if git diff --cached --quiet; then
+            echo "state unchanged"
+          else
+            git commit -m "chore: mo state $(date -u +%FT%TZ)"
+            git push
+          fi
