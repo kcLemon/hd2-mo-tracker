@@ -7,3 +7,4 @@
 | 2026-11-08T15:53:30+00:00 | 结束 | 3504692473 | STRATEGIC THREAT |  |
 | 2026-11-09T18:38:01+00:00 | 新 MO | 236809735 | MAJOR ORDER | Defend against the required number of Terminid attacks in order to contain the unprovoked, unforeseeable outbreak affecting multiple TCS+ sectors.；目标 7（当前 0）；奖励 |
 | 2026-11-13T15:15:47+00:00 | 结束 | 236809735 | MAJOR ORDER |  |
+| 2026-11-13T21:53:02+00:00 | 新 MO | 1701745153 | MAJOR ORDER | Hold the designated planets in order to enable the Firebreak Protocol, to raze infested planets and stop the spread of the mutated Terminid strain.；目标 1（当前 0）；奖 |
