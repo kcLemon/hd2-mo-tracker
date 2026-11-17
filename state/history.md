@@ -9,3 +9,4 @@
 | 2026-11-13T15:15:47+00:00 | 结束 | 236809735 | MAJOR ORDER |  |
 | 2026-11-13T21:53:02+00:00 | 新 MO | 1701745153 | MAJOR ORDER | Hold the designated planets in order to enable the Firebreak Protocol, to raze infested planets and stop the spread of the mutated Terminid strain.；目标 1（当前 0）；奖 |
 | 2026-11-17T03:38:12+00:00 | 结束 | 1701745153 | MAJOR ORDER |  |
+| 2026-11-17T21:39:03+00:00 | 新 MO | 2890701424 | MAJOR ORDER | Hold the planet chosen for construction of the Center for Mental Clarity and kill Voteless to catalyze research into innovative SEAF mental health treatments.；目 |
